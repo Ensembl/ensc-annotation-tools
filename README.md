@@ -1,4 +1,4 @@
-# ensc-annotation-tools
+# EnsC-annotation-tools
 This repository contains the OBDA and Programs directory from ensc-core found at https://github.com/Ensembl/ensc-core
 The binary used by the Ensembl Genome Annotation System are:
 * translate
