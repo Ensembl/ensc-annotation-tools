@@ -4208,7 +4208,7 @@ Vector *RefineSolexaGenes_mergeExons(RefineSolexaGenes *rsg, Gene *gene, int str
         long left  = eed->coords[j];
         long right = eed->coords[j+1];
 
-        Exon *extra = RefineSolexaGenes_makeExon(rsg, left, right, eed->score, keys[i]);
+        Exon *extra = RefineSolexaGenes_makeExon(rsg, left, right, Exon_getStrand(lastExon), eed->score, keys[i]);
 
 // Hack hack hack
         Exon_addFlag(extra, RSGEXON_EXTRA);
@@ -5123,10 +5123,10 @@ Vector *RefineSolexaGenes_fetchIntronFeatures(RefineSolexaGenes *rsg, long start
 =cut
 */
 // Note : Removed ability to call with a ugf which was only used in unused method
-Exon *RefineSolexaGenes_makeExon(RefineSolexaGenes *rsg, long start, long end, double score, char *displayId) {
+Exon *RefineSolexaGenes_makeExon(RefineSolexaGenes *rsg, long start, long end, int strand, double score, char *displayId) {
   Slice *chrSlice = RefineSolexaGenes_getChrSlice(rsg);
 
-  Exon *paddedExon = ExonUtils_createExon(start-20, end+20, -1, -1, -1, RefineSolexaGenes_getAnalysis(rsg), NULL, 0, RefineSolexaGenes_getChrSlice(rsg), NULL, 0);
+  Exon *paddedExon = ExonUtils_createExon(start-20, end+20, -1, -1, strand, RefineSolexaGenes_getAnalysis(rsg), NULL, 0, RefineSolexaGenes_getChrSlice(rsg), NULL, 0);
 
   // dont let it fall of the slice because of padding
   if (Exon_getStart(paddedExon) <= 0) {
