@@ -71,9 +71,10 @@ static int nExonClone = 0;
 
 FILE *logfp;
 
-#define RSGVERSION "0.3.4-91"
+#define RSGVERSION "0.3.5-91"
 #define RSGGENE_KEEP 16
 #define RSG_DUPLICATE 32
+#define RSG_PROCESSED 64
 int dumpGenes(Vector *genes, int withSupport);
 
 int pointer_compFunc(const void *a, const void *b) {
@@ -798,10 +799,6 @@ Slice *RefineSolexaGenes_fetchSequence(RefineSolexaGenes *rsg, char *name, DBAda
   if (repeatMaskTypes != NULL && Vector_getNumElement(repeatMaskTypes)) {
     fprintf(stderr,"RepeatMasked sequence fetching not implemented yet - bye\n");
     exit(EX_SOFTWARE);
-/* NIY
-    my $sequence = $slice->get_repeatmasked_seq($repeat_masking, $soft_masking);
-    $slice = $sequence
-*/
   }
 
   return slice;
@@ -821,7 +818,6 @@ void RefineSolexaGenes_fetchInput(RefineSolexaGenes *rsg) {
   int verbosity = RefineSolexaGenes_getVerbosity(rsg);
 
   if (verbosity > 0) fprintf(stderr, "Fetch input\n");
- // Not used?? char *logic = Analysis_getLogicName(RefineSolexaGenes_getAnalysis(rsg));
   // fetch adaptors and store them for use later
   // explicitly attach the ref db
 
@@ -984,11 +980,20 @@ void  RefineSolexaGenes_run(RefineSolexaGenes *rsg) {
   if (verbosity > 2) {
     fprintf(stderr, "RUN\n");
   }
-  RefineSolexaGenes_refineGenes(rsg);
-  if (verbosity > 2) {
-    fprintf(stderr, "FILTER\n");
+  Vector *res = RefineSolexaGenes_refineGenes(rsg, RefineSolexaGenes_getPrelimGenes(rsg));
+  int state = 1;
+  while (Vector_getNumElement(res)) {
+    Vector *tmp = RefineSolexaGenes_refineGenes(rsg, res);
+    if (Vector_getNumElement(tmp)) {
+      Vector_free(res);
+      res = tmp;
+    }
+    else {
+      Vector_free(res);
+      Vector_free(tmp);
+      break;
+    }
   }
-  RefineSolexaGenes_filterGenes(rsg);
   if (verbosity > 2) {
     fprintf(stderr, "DONE\n");
   }
@@ -1002,156 +1007,228 @@ void updateDuplicatedGeneBiotype(Gene *gene) {
   }
 }
 
-void RefineSolexaGenes_filterGenes(RefineSolexaGenes *rsg) {
-  Vector *genes = RefineSolexaGenes_getOutput(rsg);
-  int i = 0;
-  if (genes != NULL) {
+typedef struct {
+  int count;
+  int start;
+  int end;
+  int extended;
+  Vector *exons;
+} ExonCluster;
+
+ExonCluster *ExonCluster_new (Exon *exon) {
+  ExonCluster *exoncluster;
+  if ((exoncluster = (ExonCluster *)calloc(1,sizeof(ExonCluster))) == NULL) {
+    fprintf(stderr,"Failed allocating exon cluster\n");
+    exit(EXIT_MEMORY);
+  }
+  exoncluster->count = 1;
+  exoncluster->start = Exon_getStart(exon);
+  exoncluster->end = Exon_getEnd(exon);
+  exoncluster->extended = 0;
+  exoncluster->exons = Vector_new();
+  Vector_addElement(exoncluster->exons, exon);
+
+  return exoncluster;
+}
+
+void ExonCluster_free(ExonCluster *exoncluster) {
+  Vector_free(exoncluster->exons);
+  free(exoncluster);
+}
+
+void ExonCluster_addElement(ExonCluster *cluster, Exon *exon) {
+  ++cluster->count;
+  int extend = 0;
+  if (Exon_getStart(exon) < cluster->start) {
+    cluster->start = Exon_getStart(exon);
+    extend = 1;
+  }
+  if (Exon_getEnd(exon) > cluster->end) {
+    cluster->end = Exon_getEnd(exon);
+    extend = 1;
+  }
+  cluster->extended += extend;
+  Vector_addElement(cluster->exons, exon);
+}
+
+int ExonCluster_startSort(const void *a, const void *b) {
+  ExonCluster *one = *((ExonCluster **)a);
+  ExonCluster *two = *((ExonCluster **)b);
+
+  if (one->start == two->start) {
+    return 0;
+  } else if (one->start > two->start) {
+    return 1;
+  } else {
+    return -1;
+  }
+}
+
+Vector *RefineSolexaGenes_filterGenes(RefineSolexaGenes *rsg, Vector *genes) {
+  Vector *filtered_genes = Vector_new();
+  if (genes != NULL && Vector_getNumElement(genes) > 0) {
+    Vector *clusters = Vector_new();
     Vector_sort(genes, SeqFeature_startRevEndCompFunc);
+    int i = 0;
+    int j = 0;
     for (i=0; i < Vector_getNumElement(genes); i++) {
       Gene *gene = Vector_getElementAt(genes, i);
-      if (!(gene->flags & RSG_DUPLICATE)) {
-        Transcript *t;
-        Transcript *ttp;
-        int num_exon = 0;
-        int num_exon_tp = 0;
-        int j = i+1;
-        Exon *exon;
-        Exon *exon_tp;
-        int biotype_length;
-        Gene *gene_to_process;
-        for (j=i+1; j < Vector_getNumElement(genes); j++) {
-          gene_to_process = Vector_getElementAt(genes, j);
-          if (!(gene_to_process->flags & RSG_DUPLICATE)) {
-            if (Gene_getStrand(gene) == Gene_getStrand(gene_to_process)) {
-              if (Gene_getEnd(gene) < Gene_getStart(gene_to_process)) {
-                // Go next gene
-                break;
+      int new_cluster = 1;
+      for (j = Vector_getNumElement(clusters)-1; j > -1; j--) {
+        ModelCluster *cluster = Vector_getElementAt(clusters, j);
+        if (Gene_getStrand(gene) == cluster->strand) {
+          if (Gene_getStart(gene) > cluster->end) {
+            break;
+          }
+          else if (Gene_getStart(gene) <= cluster->end && Gene_getEnd(gene) >= cluster->start) {
+            Vector_addElement(cluster->models, gene);
+            if (Gene_getEnd(gene) > cluster->end) {
+              cluster->end = Gene_getEnd(gene);
+            }
+            new_cluster = 0;
+            break;
+          }
+        }
+      }
+      if (new_cluster) {
+        ModelCluster *cluster = ModelCluster_new();
+        cluster->start = Gene_getStart(gene);
+        cluster->end = Gene_getEnd(gene);
+        cluster->strand = Gene_getStrand(gene);
+        cluster->models = Vector_new();
+        Vector_addElement(cluster->models, gene);
+        Vector_addElement(clusters, cluster);
+      }
+    }
+    for (i = 0; i < Vector_getNumElement(clusters); i++) {
+      ModelCluster *cluster = Vector_getElementAt(clusters, i);
+      if (Vector_getNumElement(cluster->models) == 1) {
+        Vector_addElement(filtered_genes, Vector_getElementAt(cluster->models, 0));
+      }
+      else {
+        for (j = 0; j < Vector_getNumElement(cluster->models); j++) {
+          Gene *gene = Vector_getElementAt(cluster->models, j);
+          if (!(gene->flags & RSG_DUPLICATE)) {
+            Vector *exons = Transcript_getAllExons(Gene_getTranscriptAt(gene, 0));
+            int k = 0;
+            for (k = 0; k < Vector_getNumElement(cluster->models); k++) {
+              if (j == k) {
+                continue;
               }
-              else if (Gene_getStart(gene) > Gene_getEnd(gene_to_process)) {
-                // Go next gene_to_process
+              Gene *compared_gene = Vector_getElementAt(cluster->models, k);
+              Vector *compared_exons = Transcript_getAllExons(Gene_getTranscriptAt(compared_gene, 0));
+              Vector *exonclusters = Vector_new();
+              int e = 0;
+              for (e = 0; e < Vector_getNumElement(exons); e++) {
+                Exon *exon = Vector_getElementAt(exons, e);
+                ExonCluster *ecluster = ExonCluster_new(exon);
+                Vector_addElement(exonclusters, ecluster);
               }
-              else {
-                // We overlap
-                t = Gene_getTranscriptAt(gene, 0);
-                ttp = Gene_getTranscriptAt(gene_to_process, 0);
-                num_exon = Transcript_getExonCount(t);
-                num_exon_tp = Transcript_getExonCount(ttp);
-                int exon_index = 0;
-                int exon_index_tp = 0;
-                int count_exon_equal = 0;
-                int count_adjacent_exon = 0;
-                int max_adjacent_exon = 0;
-                int last_exon_tp = 0;
-                Vector *exons = Transcript_getAllExons(t);
-                Vector *exons_tp = Transcript_getAllExons(ttp);
-                if (Transcript_getStrand(t) == -1) {
-                  Vector_sort(exons, SeqFeature_startCompFunc);
-                  Vector_sort(exons_tp, SeqFeature_startCompFunc);
+              int ej = 0;
+              int ek = 0;
+              for (e = 0; e < Vector_getNumElement(compared_exons); e++) {
+                Exon *compared_exon = Vector_getElementAt(compared_exons, e);
+                int added = 0;
+                for (ej = ek; ej < Vector_getNumElement(exonclusters); ej++) {
+                  ExonCluster *ecluster = Vector_getElementAt(exonclusters, ej);
+                  if (Exon_getEnd(compared_exon) >= ecluster->start && Exon_getStart(compared_exon) <= ecluster->end) {
+                    ExonCluster_addElement(ecluster, compared_exon);
+                    ek = ej;
+                    added = 1;
+                    break;
+                  }
                 }
-                for (exon_index = 0; exon_index < num_exon; exon_index++) {
-                  exon = Vector_getElementAt(exons, exon_index);
-                  for (exon_index_tp = last_exon_tp; exon_index_tp < num_exon_tp; exon_index_tp++) {
-                    exon_tp = Vector_getElementAt(exons_tp, exon_index_tp);
-                    if (Exon_getStart(exon) <= Exon_getEnd(exon_tp) && Exon_getEnd(exon) >= Exon_getStart(exon_tp)) {
-                      if (Exon_getStart(exon) == Exon_getStart(exon_tp) && Exon_getEnd(exon) == Exon_getEnd(exon_tp)) {
-                        ++count_exon_equal;
-                        ++count_adjacent_exon;
-                      }
-                      else if (exon_index_tp == 0) {
-                        if (Exon_getStart(exon) < Exon_getStart(exon_tp) && Exon_getEnd(exon) == Exon_getEnd(exon_tp)) {
-                          ++count_exon_equal;
-                          ++count_adjacent_exon;
-                        }
-                        else if (num_exon_tp == 1 && Exon_getStart(exon) < Exon_getStart(exon_tp) && Exon_getEnd(exon) > Exon_getEnd(exon_tp)) {
-                          ++count_exon_equal;
-                          ++count_adjacent_exon;
-                        }
-                        else if (exon_index > 0 && Exon_getStart(exon) > Exon_getStart(exon_tp) && Exon_getEnd(exon) == Exon_getEnd(exon_tp)) {
-                          Vector *introns = Transcript_getAllIntronSupportingEvidence(t);
-                          if (Transcript_getStrand(t) == -1) {
-                            Vector_sort(introns, SeqFeature_startCompFunc);
-                          }
-                          int num_intron = Vector_getNumElement(introns);
-                          if (num_intron > exon_index) {
-                            if (IntronSupportingEvidence_getScore((IntronSupportingEvidence *)Vector_getElementAt(introns, exon_index-1)) > (IntronSupportingEvidence_getScore((IntronSupportingEvidence *)Vector_getElementAt(introns, exon_index))*0.5)) {
-                              ++count_exon_equal;
-                              ++count_adjacent_exon;
-                            }
-                          }
-                          if (Transcript_getStrand(t) == -1) {
-                            Vector_sort(introns, SeqFeature_reverseStartCompFunc);
-                          }
-                        }
-                      }
-                      else if (exon_index_tp == num_exon_tp-1) {
-                        if (Exon_getStart(exon) == Exon_getStart(exon_tp) && Exon_getEnd(exon) > Exon_getEnd(exon_tp)) {
-                          ++count_exon_equal;
-                          ++count_adjacent_exon;
-                        }
-                        else if (exon_index < num_exon-1 && Exon_getStart(exon) == Exon_getStart(exon_tp) && Exon_getEnd(exon) < Exon_getEnd(exon_tp)) {
-                          Vector *introns = Transcript_getAllIntronSupportingEvidence(t);
-                          if (Transcript_getStrand(t) == -1) {
-                            Vector_sort(introns, SeqFeature_startCompFunc);
-                          }
-                          int num_intron = Vector_getNumElement(introns);
-                          if (num_intron > exon_index) {
-                            if (IntronSupportingEvidence_getScore((IntronSupportingEvidence *)Vector_getElementAt(introns, exon_index)) > (IntronSupportingEvidence_getScore((IntronSupportingEvidence *)Vector_getElementAt(introns, exon_index-1))*0.5)) {
-                              ++count_exon_equal;
-                              ++count_adjacent_exon;
-                            }
-                          }
-                          if (Transcript_getStrand(t) == -1) {
-                            Vector_sort(introns, SeqFeature_reverseStartCompFunc);
-                          }
-                        }
-                      }
-                      else {
-                        if (count_adjacent_exon > max_adjacent_exon) {
-                          max_adjacent_exon = count_adjacent_exon;
-                        }
-                        count_adjacent_exon = 0;
-                      }
-                      last_exon_tp = exon_index_tp+1;
-                      break;
-                    }
-                    else {
-                      if (count_adjacent_exon > max_adjacent_exon) {
-                        max_adjacent_exon = count_adjacent_exon;
-                      }
-                      count_adjacent_exon = 0;
+                if (!added) {
+                  ExonCluster *ecluster = ExonCluster_new(compared_exon);
+                  Vector_addElement(exonclusters, ecluster);
+                }
+              }
+              Vector_sort(exonclusters, ExonCluster_startSort);
+              Vector *concat = Vector_new();
+              Vector_addElement(concat, Vector_new());
+              int retained_introns = 0;
+              for (e = 0; e < Vector_getNumElement(exonclusters); e++) {
+                ExonCluster *ecluster = Vector_getElementAt(exonclusters, e);
+                if (ecluster->count > 1) {
+                  Vector_addElement((Vector *)Vector_getLastElement(concat), ecluster);
+                  if (ecluster->count > 2) {
+                    // We have a possible retained intron
+                    Vector_sort(ecluster->exons, SeqFeature_startRevEndCompFunc);
+                    if (Exon_getStart((Exon *)Vector_getElementAt(ecluster->exons, 0)) == Exon_getStart((Exon *)Vector_getElementAt(ecluster->exons, 1))
+                        && Exon_getEnd((Exon *)Vector_getElementAt(ecluster->exons, 0)) == Exon_getEnd((Exon *)Vector_getLastElement(ecluster->exons))) {
+                      ++retained_introns;
                     }
                   }
                 }
-                if (Transcript_getStrand(t) == -1) {
-                  Vector_sort(exons, SeqFeature_reverseStartCompFunc);
-                  Vector_sort(exons_tp, SeqFeature_reverseStartCompFunc);
-                }
-                if (count_adjacent_exon > max_adjacent_exon) {
-                  max_adjacent_exon = count_adjacent_exon;
-                }
-                if (num_exon == count_exon_equal && num_exon_tp == count_exon_equal) {
-                  updateDuplicatedGeneBiotype(gene_to_process);
-                }
-                else if ((num_exon == count_exon_equal && max_adjacent_exon == num_exon && num_exon_tp != count_exon_equal )
-                       || num_exon != count_exon_equal && max_adjacent_exon == num_exon_tp && num_exon_tp == count_exon_equal ) {
-                  updateDuplicatedGeneBiotype(gene_to_process);
+                else if (ecluster->count == 1) {
+                  if (Vector_getNumElement((Vector *)Vector_getLastElement(concat)) > 0) {
+                    Vector_addElement(concat, Vector_new());
+                  }
                 }
               }
+              if (Vector_getNumElement(concat) == 1) {
+                if (Vector_getNumElement(exons) == Vector_getNumElement((Vector *)Vector_getElementAt(concat,0)) && Vector_getNumElement(exons) == Vector_getNumElement(compared_exons)) {
+                  Gene *duplicate = compared_gene;
+                  ExonCluster *left = Vector_getElementAt((Vector *)Vector_getElementAt(concat, 0), 0);
+                  ExonCluster *right = Vector_getLastElement((Vector *)Vector_getElementAt(concat, 0));
+                  if (Gene_getStrand(gene) == -1 && Gene_getStart(compared_gene) != Gene_getStart(gene)) {
+                    if (left->count == 2) {
+                      if (Gene_getStart(compared_gene) > left->start && Transcript_getCodingRegionStart(Gene_getTranscriptAt(compared_gene, 0)) > Gene_getStart(compared_gene)) {
+                        duplicate = gene;
+                      }
+                    }
+                  }
+                  if (Gene_getStrand(gene) == 1 && Gene_getEnd(compared_gene) != Gene_getEnd(gene)) {
+                    if (right->count == 2) {
+                      if (Gene_getEnd(compared_gene) < right->end && Transcript_getCodingRegionEnd(Gene_getTranscriptAt(compared_gene, 0)) < Gene_getEnd(compared_gene)) {
+                        duplicate = gene;
+                      }
+                    }
+                  }
+                  updateDuplicatedGeneBiotype(duplicate);
+                }
+                else if (Vector_getNumElement((Vector *)Vector_getElementAt(concat, 0)) == Vector_getNumElement(compared_exons)) {
+                  updateDuplicatedGeneBiotype(compared_gene);
+                }
+                else if (retained_introns) {
+                  if (Vector_getNumElement(exons) > Vector_getNumElement(compared_exons)) {
+                    updateDuplicatedGeneBiotype(compared_gene);
+                  }
+                  if (Vector_getNumElement(exons) < Vector_getNumElement(compared_exons)) {
+                    updateDuplicatedGeneBiotype(gene);
+                  }
+                }
+              }
+              Vector_setFreeFunc(exonclusters, ExonCluster_free);
+              Vector_free(exonclusters);
+              for (e = 0; e < Vector_getNumElement(concat); e++) {
+                Vector *v = Vector_getElementAt(concat, e);
+                Vector_free(v);
+              }
+              Vector_free(concat);
             }
+          }
+        }
+        for (j = 0; j < Vector_getNumElement(cluster->models); j++) {
+          Gene *gene = Vector_getElementAt(cluster->models, j);
+          if (!(gene->flags & RSG_DUPLICATE)) {
+            Vector_addElement(filtered_genes, gene);
+            fprintf(stderr, " YES\n");
+          }
+          else {
+            fprintf(stderr, " NO\n");
           }
         }
       }
     }
-    Vector *filtered_genes = Vector_new();
-    for (i = 0; i < Vector_getNumElement(genes);i++) {
-      Gene *gene = Vector_getElementAt(genes, i);
-      if (!(gene->flags & RSG_DUPLICATE)) {
-        Vector_addElement(filtered_genes, gene);
-      }
+    for (i = 0; i < Vector_getNumElement(clusters); i++) {
+      ModelCluster *cluster = Vector_getElementAt(clusters, i);
+      Vector_free(cluster->models);
+      free(cluster);
     }
-    Vector_free(rsg->output);
-    rsg->output = filtered_genes;
+    Vector_free(clusters);
   }
+  return filtered_genes;
 }
 
 /*
@@ -1167,16 +1244,18 @@ void RefineSolexaGenes_filterGenes(RefineSolexaGenes *rsg) {
 =cut
 */
 
-void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
-  Vector *prelimGenes = RefineSolexaGenes_getPrelimGenes(rsg);
+Vector *RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg, Vector *prelimGenes) {
   int verbosity = RefineSolexaGenes_getVerbosity(rsg);
 
   int i;
+  Vector *roughToBreak = Vector_new();
 // GENE:
   for (i=0; i<Vector_getNumElement(prelimGenes); i++) {
-
     if (verbosity > 1) fprintf(stderr,"STARTING NEW PRELIM GENE\n");
     Gene *gene = Vector_getElementAt(prelimGenes, i);
+    if (gene->flags & RSG_PROCESSED) {
+      continue;
+    }
     Transcript *transcript = Gene_getTranscriptAt(gene, 0);
     int giveUpFlag = 0; // Note: This is used a long way down this routine - if set results in skipping to next gene which is why I put it here
 
@@ -1187,6 +1266,7 @@ void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
     }
 
     Vector *models = Vector_new();
+    Vector *ref_models = Vector_new();
 
     int singleExon = 0;
     // first run on the rev strand then on the fwd
@@ -1203,11 +1283,9 @@ void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
 
       if (verbosity > 1) fprintf(stderr,"Running on strand %d\n", strand);
 
-// Doesn't seem to be used      StringHash *intronCount = StringHash_new(STRINGHASH_SMALL);
       Vector *exonIntron = Vector_new(); // A Vector of Vectors. Each Vector lists the possible introns for a particular exon
 
       StringHash *intronHash = StringHash_new(STRINGHASH_SMALL); // A hash containing all the introns, keyed on intron HitSeqName.
-// Doesn't seem to be used      Vector *exonPrevIntron = Vector_new();
       StringHash *intronExon = StringHash_new(STRINGHASH_SMALL); // A Hash of Vectors. keyed on intron HitSeqName. Each element is a list of exons
 
       int mostRealIntrons = 0;
@@ -1219,7 +1297,6 @@ void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
       Vector_sort(exons, SeqFeature_startCompFunc);
 
       int exonCount = Vector_getNumElement(exons);
-// Doesn't seem to be used      Vector *fakeIntrons = Vector_new();
       StringHash *knownExons = StringHash_new(STRINGHASH_SMALL);
 
       long offset = 0;
@@ -1235,7 +1312,6 @@ void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
         int leftIntrons = 0;
         int rightIntrons = 0;
 
-// Don't seem to be used so commented out
         // make intron features by collapsing the dna_align_features
 
 // Note in perl introns and offset are both returned - in C change to pass offset as pointer so can be modified
@@ -1272,11 +1348,9 @@ void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
             continue;
           }
 
-          // check to see if this exon contains a retained intron
           if (DNAAlignFeature_getStart(intron) > Exon_getStart(exon) &&
               DNAAlignFeature_getEnd(intron) < Exon_getEnd(exon) ) {
             retainedIntron = 1;
-// Hack hack hack
 
             Exon_addFlag(exon, RSGEXON_RETAINED);
 
@@ -1585,7 +1659,7 @@ void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
           paths = RefineSolexaGenes_processPaths(rsg, exons, exonIntron, intronExon, strict, &giveUpFlag );
 
           if (giveUpFlag) {
-            //next GENE if $paths && $paths eq 'Give up';
+            Vector_addElement(roughToBreak, gene);
             break; // Will use giveUpFlag to stop anything happening after here for this gene (except any necessary freeing of temp data)
           }
           strict++;
@@ -1752,7 +1826,14 @@ void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
 
       // filter to identify 'best', 'other' and 'bad' models
 
-      RefineSolexaGenes_filterModels(rsg, cleanClusters);
+      Vector *tmp_models = RefineSolexaGenes_filterModels(rsg, cleanClusters, gene);
+      if (Vector_getNumElement(tmp_models)) {
+        int tmpi = 0;
+        for (tmpi = 0; tmpi < Vector_getNumElement(tmp_models); tmpi++) {
+          Vector_addElement(ref_models, Vector_getElementAt(tmp_models, tmpi));
+        }
+      }
+      Vector_free(tmp_models);
       Vector_free(cleanClusters);
 
       // process single exon models
@@ -1860,7 +1941,7 @@ void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
             sprintf(stableId, "%s-v1-%d", Gene_getStableId(gene), (int)score);
             Gene_setStableId(newGene, stableId);
 
-            RefineSolexaGenes_addToOutput(rsg, newGene);
+            Vector_addElement(ref_models, newGene);
           }
           Exon_free(exon);
         }
@@ -1869,12 +1950,176 @@ void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg) {
 // NIY: Any freeing/tidying for a gene's worth of processing should go here
 
 // NIY: Do we need to free models contents too??
+    if (ref_models != NULL && Vector_getNumElement(ref_models) > 0) {
+      Vector *final_models_final;
+      final_models_final = RefineSolexaGenes_filterGenes(rsg, ref_models);
+      Vector *splitGenes = RefineSolexaGenes_checkNewGeneCoverage(rsg, gene, final_models_final);
+      int fill_index = 0;
+      for (fill_index = 0; fill_index < Vector_getNumElement(splitGenes); fill_index++) {
+        Vector_addElement(prelimGenes, Vector_getElementAt(splitGenes, fill_index));
+      }
+      for (fill_index = 0; fill_index < Vector_getNumElement(final_models_final); fill_index++) {
+        RefineSolexaGenes_addToOutput(rsg, Vector_getElementAt(final_models_final, fill_index));
+      }
+      Vector_free(final_models_final);
+      Vector_free(ref_models);
+    }
     Vector_setFreeFunc(models, ModelCluster_free);
     Vector_free(models);
 #ifdef HAVE_LIBTCMALLOC
     MallocExtension_ReleaseFreeMemory();
 #endif
+    gene->flags |= RSG_PROCESSED;
   }
+  Vector *goodGenes = RefineSolexaGenes_getOutput(rsg);
+  Vector *splitRough = Vector_new();
+  if (goodGenes != NULL) {
+    for (i = 0; i < Vector_getNumElement(roughToBreak); i++) {
+      Gene *gene = Vector_getElementAt(roughToBreak, i);
+      gene->flags ^= RSG_PROCESSED;
+      Vector *genesToProcess = Vector_new();
+      int j = 0;
+      for (j = 0; j < Vector_getNumElement(goodGenes); j++) {
+        Gene *goodGene = Vector_getElementAt(goodGenes, j);
+        if (Gene_getStart(gene) < Gene_getStart(goodGene) && Gene_getEnd(goodGene) < Gene_getEnd(gene)) {
+          Vector_addElement(genesToProcess, goodGene);
+        }
+      }
+      if (Vector_getNumElement(genesToProcess)) {
+        Vector *exons = Vector_copy(Transcript_getAllExons(Gene_getTranscriptAt(gene, 0)));
+        Vector_sort(exons, SeqFeature_startCompFunc);
+        int k = 0;
+        int l = 0;
+        int istart = 0;
+        int iend = 0;
+        Transcript *newT = Transcript_new();
+        for (j = 0; j < Vector_getNumElement(exons)-1; j++) {
+          Exon *exon = Vector_getElementAt(exons, j);
+          Transcript_addExon(newT, exon, 0);
+          istart = Gene_getEnd(exon);
+          exon = Vector_getElementAt(exons, j+1);
+          iend = Gene_getStart(exon);
+          for (k = l; k < Vector_getNumElement(genesToProcess); k++) {
+            Gene *goodGene = Vector_getElementAt(genesToProcess, k);
+            if (Gene_getStart(goodGene) > iend) {
+              break;
+            }
+            else if (Gene_getEnd(goodGene) < istart) {
+              l = k;
+            }
+            else if (Gene_getStart(goodGene) > istart) {
+             if (Gene_getEnd(goodGene) < iend) {
+                Transcript_setAnalysis(newT, Gene_getAnalysis(gene));
+                Transcript_setStableId(newT, Transcript_getStableId(Gene_getTranscriptAt(gene, 0)));
+                Gene *newG = Gene_new();
+                Gene_addTranscript(newG, newT);
+                Gene_setAnalysis(newG, Gene_getAnalysis(gene));
+                Gene_setStableId(newG, Gene_getStableId(gene));
+                Vector_addElement(splitRough, newG);
+                newT = Transcript_new();
+              }
+              l = k+1;
+              break;
+            }
+          }
+        }
+        Transcript_addExon(newT, Vector_getLastElement(exons), 0);
+        Transcript_setAnalysis(newT, Gene_getAnalysis(gene));
+        Transcript_setStableId(newT, Transcript_getStableId(Gene_getTranscriptAt(gene, 0)));
+        Gene *newG = Gene_new();
+        Gene_addTranscript(newG, newT);
+        Gene_setAnalysis(newG, Gene_getAnalysis(gene));
+        Gene_setStableId(newG, Gene_getStableId(gene));
+        Vector_addElement(splitRough, newG);
+      }
+    }
+  }
+  return splitRough;
+}
+
+Vector *RefineSolexaGenes_checkNewGeneCoverage(RefineSolexaGenes *rsg, Gene *roughGene, Vector *gene_set) {
+  int kj = 0;
+  Vector_sort(gene_set, SeqFeature_startEndCompFunc);
+  Vector *splitGenes = Vector_new();
+  Vector *blocks = Vector_new();
+  long start = Gene_getStart(roughGene);
+  long end = Gene_getEnd(roughGene);
+  long last_end = start;
+  Vector_addElement(blocks, ORFRange_new(1, start, end));
+  for (kj = 0; kj < Vector_getNumElement(gene_set); kj++) {
+    Gene *gene = Vector_getElementAt(gene_set, kj);
+    if (last_end < Gene_getStart(gene)) {
+      ORFRange *last = Vector_getLastElement(blocks);
+      if (last->end > Gene_getStart(gene)) {
+        last->end = Gene_getStart(gene)-1;
+      }
+      Vector_addElement(blocks, ORFRange_new(1, Gene_getEnd(gene)+1, end));
+    }
+  }
+  int jk = 0;
+  int ijk = 0;
+  Vector *exons = Vector_copy(Transcript_getAllExons(Gene_getTranscriptAt(roughGene, 0)));
+  Vector_sort(exons, SeqFeature_startCompFunc);
+  for (kj = 0; kj < Vector_getNumElement(blocks); kj++) {
+    ORFRange *block = Vector_getElementAt(blocks, kj);
+    Transcript *newT = Transcript_new();
+    for (jk = ijk; jk < Vector_getNumElement(exons); jk++) {
+      Exon *exon = Vector_getElementAt(exons, jk);
+      if (Exon_getStart(exon) <= block->end && Exon_getEnd(exon) >= block->start) {
+        int start = 0;
+        int end = 0;
+        if (Exon_getStart(exon) < block->start) {
+          if (block->start-Exon_getStart(exon) < 40) {
+            continue;
+          }
+          start = block->start;
+        }
+        if (Exon_getEnd(exon) > block->end) {
+          if (Exon_getEnd(exon)-block->end < 40) {
+            continue;
+          }
+          end = block->end;
+        }
+        if (start || end) {
+          start = start ? start : Exon_getStart(exon);
+          end = end ? end : Exon_getEnd(exon);
+          BaseAlignFeature *sf = EvidenceUtils_cloneEvidence(Vector_getElementAt(Exon_getAllSupportingFeatures(exon), 0));
+          BaseAlignFeature_setStart(sf, start);
+          BaseAlignFeature_setEnd(sf, end);
+          Vector *sfs = Vector_new();
+          Vector_addElement(sfs, sf);
+          Exon *newE = ExonUtils_createExon(start, end, -1, -1, Exon_getStrand(exon), Exon_getAnalysis(exon), sfs, 0, Exon_getSlice(exon), NULL, 0);
+          Transcript_addExon(newT, newE, 0);
+        }
+        else {
+          Transcript_addExon(newT, exon, 0);
+        }
+      }
+      else if (Exon_getStart(exon) > block->end) {
+        ijk = jk;
+        break;
+      }
+    }
+    if (Transcript_getExonCount(newT) > 0 && !(Gene_getStart(roughGene) == Transcript_getStart(newT) && Gene_getEnd(roughGene) == Transcript_getEnd(newT))) {
+      int iii = 0;
+      if (Transcript_getExonCount(newT) == 1 && Transcript_getLength(newT) < RefineSolexaGenes_getMinSingleExonLength) {
+        Transcript_free(newT);
+      }
+      else {
+        Transcript_setStableId(newT, Transcript_getStableId(Gene_getTranscriptAt(roughGene, 0)));
+        Transcript_setAnalysis(newT, Gene_getAnalysis(roughGene));
+        Gene *newG = Gene_new();
+        Gene_addTranscript(newG, newT);
+        Gene_setStableId(newG, Gene_getStableId(roughGene));
+        Gene_setAnalysis(newG, Gene_getAnalysis(roughGene));
+        Vector_addElement(splitGenes, newG);
+      }
+    }
+    else {
+      Transcript_free(newT);
+    }
+  }
+  return splitGenes;
 }
 
 void RefineSolexaGenes_addToOutput(RefineSolexaGenes *rsg, Gene *gene) {
@@ -2137,13 +2382,14 @@ ModelCluster *RefineSolexaGenes_recalculateCluster(RefineSolexaGenes *rsg, Vecto
 // NOTE: Modifies output vector of RunnableDB
 // Perl had models instead of clusters but then immediately assigned clusters = models, but then uses models for something else, so just call
 // it clusters from start
-void RefineSolexaGenes_filterModels(RefineSolexaGenes *rsg, Vector *clusters) {
+Vector *RefineSolexaGenes_filterModels(RefineSolexaGenes *rsg, Vector *clusters, Gene *roughGene) {
   Vector *fwd = Vector_new();
   Vector *rev = Vector_new();
 
   int verbosity = RefineSolexaGenes_getVerbosity(rsg);
 
   Vector *models = Vector_new();
+  Vector *final_models = Vector_new();
 
   int i;
   for (i=0; i<Vector_getNumElement(clusters); i++) {
@@ -2311,7 +2557,7 @@ void RefineSolexaGenes_filterModels(RefineSolexaGenes *rsg, Vector *clusters) {
   Vector_free(fwd);
   Vector_free(rev);
 
-  fprintf(stderr, " got %d model clusters\n", Vector_getNumElement(models));
+  if (verbosity > 0) fprintf(stderr, " got %d model clusters\n", Vector_getNumElement(models));
 
   for (i=0; i<Vector_getNumElement(models); i++) {
     ModelCluster *cluster = Vector_getElementAt(models, i);
@@ -2424,7 +2670,8 @@ void RefineSolexaGenes_filterModels(RefineSolexaGenes *rsg, Vector *clusters) {
         if (RefineSolexaGenes_getBadModelsType(rsg) != NULL) {
           Gene_setBiotype(gene, RefineSolexaGenes_getBadModelsType(rsg));
           if (count <= RefineSolexaGenes_getOtherNum(rsg)) {
-            RefineSolexaGenes_addToOutput(rsg, gene);
+            Vector_addElement(final_models, gene);
+            fprintf(stderr, " %s %ld %ld %d %s %d\n", Gene_getStableId(gene), Gene_getStart(gene), Gene_getEnd(gene), Gene_getStrand(gene), Gene_getBiotype(gene), Transcript_getExonCount(Gene_getTranscriptAt(gene, 0)));
           }
         }
       } else {
@@ -2433,14 +2680,16 @@ void RefineSolexaGenes_filterModels(RefineSolexaGenes *rsg, Vector *clusters) {
           if (!strcmp(Gene_getBiotype(gene), RefineSolexaGenes_getBestScoreType(rsg))) {
             // trim the UTR
             if (RefineSolexaGenes_pruneUTR(rsg, gene) == 0) {
-              RefineSolexaGenes_addToOutput(rsg, gene);
+              Vector_addElement(final_models, gene);
+              fprintf(stderr, " %s %ld %ld %d %s %d\n", Gene_getStableId(gene), Gene_getStart(gene), Gene_getEnd(gene), Gene_getStrand(gene), Gene_getBiotype(gene), Transcript_getExonCount(Gene_getTranscriptAt(gene, 0)));
             }
           } else {
 // Note here checking for whether other isoforms type is null, other places assume its not null
             if (RefineSolexaGenes_getOtherNum(rsg) && RefineSolexaGenes_getOtherIsoformsType(rsg) != NULL && strlen(RefineSolexaGenes_getOtherIsoformsType(rsg)) != 0 && count <= RefineSolexaGenes_getOtherNum(rsg)) {
               // trim the UTR
               if (RefineSolexaGenes_pruneUTR(rsg, gene) == 0) {
-                RefineSolexaGenes_addToOutput(rsg, gene);
+                Vector_addElement(final_models, gene);
+                fprintf(stderr, " %s %ld %ld %d %s %d\n", Gene_getStableId(gene), Gene_getStart(gene), Gene_getEnd(gene), Gene_getStrand(gene), Gene_getBiotype(gene), Transcript_getExonCount(Gene_getTranscriptAt(gene, 0)));
               }
             }
           }
@@ -2453,6 +2702,7 @@ void RefineSolexaGenes_filterModels(RefineSolexaGenes *rsg, Vector *clusters) {
     }
   }
   Vector_free(models);
+  return final_models;
 }
 
 
@@ -3686,10 +3936,6 @@ StringHash *RefineSolexaGenes_processPaths(RefineSolexaGenes *rsg, Vector *exons
                     i, Exon_getStart(exon), Exon_getEnd(exon), Exon_getStrand(exon));
           }
 
-          for (j=0; j<Vector_getNumElement(intronGroup); j++) {
-            DNAAlignFeature *intron = Vector_getElementAt(intronGroup, j);
-          }
-
           if (Vector_getNumElement(intronGroup) > 1) {
             // remove the lowest scoring one
             DNAAlignFeature *intron = Vector_getLastElement(intronGroup);
@@ -3702,6 +3948,13 @@ StringHash *RefineSolexaGenes_processPaths(RefineSolexaGenes *rsg, Vector *exons
               sprintf(tmpStr, "%s-REMOVED", hseqname);
               DNAAlignFeature_setHitSeqName(intron, tmpStr);
               removed++;
+            }
+          }
+
+          if (verbosity > 2) {
+            for (j=0; j<Vector_getNumElement(intronGroup); j++) {
+              DNAAlignFeature *intron = Vector_getElementAt(intronGroup, j);
+              fprintf(stderr, "%d %s %.0f\n", i, DNAAlignFeature_getHitSeqName(intron), DNAAlignFeature_getScore(intron));
             }
           }
         }

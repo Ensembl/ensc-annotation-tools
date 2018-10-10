@@ -160,11 +160,11 @@ RefineSolexaGenes *RefineSolexaGenes_new(char *configFile, char *logicName);
 DBAdaptor *RefineSolexaGenes_getDbAdaptor(RefineSolexaGenes *rsg, char *alias);
 void RefineSolexaGenes_fetchInput(RefineSolexaGenes *rsg);
 void  RefineSolexaGenes_run(RefineSolexaGenes *rsg);
-void RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg);
+Vector *RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg, Vector *prelimGenes);
 Analysis *RefineSolexaGenes_createAnalysisObject(RefineSolexaGenes *rsg, char *logicName);
 Vector *RefineSolexaGenes_reclusterModels(RefineSolexaGenes *rsg, Vector *clusters, Vector **retNewClusters);
 ModelCluster *RefineSolexaGenes_recalculateCluster(RefineSolexaGenes *rsg, Vector *genes);
-void RefineSolexaGenes_filterModels(RefineSolexaGenes *rsg, Vector *clusters);
+Vector *RefineSolexaGenes_filterModels(RefineSolexaGenes *rsg, Vector *clusters, Gene *roughGene);
 Vector *RefineSolexaGenes_makeModels(RefineSolexaGenes *rsg, StringHash *paths, int strand, Vector *exons, Gene *gene, StringHash *intronHash);
 Transcript *RefineSolexaGenes_modifyTranscript(RefineSolexaGenes *rsg, Transcript *tran, Vector *exons);
 void RefineSolexaGenes_writeOutput(RefineSolexaGenes *rsg);
@@ -177,7 +177,7 @@ void RefineSolexaGenes_bamToIntronFeatures(RefineSolexaGenes *rsg, IntronBamConf
 int RefineSolexaGenes_getUngappedFeatures(RefineSolexaGenes *rsg, bam_hdr_t *header, bam1_t *b, CigarBlock **ugfs);
 void RefineSolexaGenes_dnaToIntronFeatures(RefineSolexaGenes *rsg, long start, long end);
 Vector *RefineSolexaGenes_fetchIntronFeatures(RefineSolexaGenes *rsg, long start, long end, long *offsetP);
-Exon *RefineSolexaGenes_makeExon(RefineSolexaGenes *rsg, long start, long end, double score, char *diplayId);
+Exon *RefineSolexaGenes_makeExon(RefineSolexaGenes *rsg, long start, long end, int strand, double score, char *diplayId);
 int RefineSolexaGenes_pruneUTR(RefineSolexaGenes *rsg, Gene *gene);
 void RefineSolexaGenes_setRecursiveLimit(RefineSolexaGenes *rsg, int limit);
 int RefineSolexaGenes_getRecursiveLimit(RefineSolexaGenes *rsg);
@@ -290,8 +290,9 @@ void RefineSolexaGenes_dumpConfig(RefineSolexaGenes *rsg);
 
 int SeqFeat_lengthCompFunc(const void *a, const void *b);
 void updateDuplicatedGeneBiotype(Gene *gene);
-int isGeneDuplicated(RefineSolexaGenes *rsg, Vector *indexes, Vector *genes, Gene *gene);
-void RefineSolexaGenes_filterGenes(RefineSolexaGenes *rsg);
+Vector *RefineSolexaGenes_filterGenes(RefineSolexaGenes *rsg, Vector *genes);
+Vector *RefineSolexaGenes_checkNewGeneCoverage(RefineSolexaGenes *rsg, Gene *roughGene, Vector *genes);
+ORFRange *ORFRange_new(long length, long start, long end);
 
 // To move
   Transcript *TranslationUtils_addORFToTranscript(ORFRange *orf, Transcript *transcript);
