@@ -1,0 +1,11 @@
+# Files created by the compiler
+*.o
+*.lo
+*.la
+
+# Directories created by the make process
+.deps
+.libs
+
+# M4 data
+m4
