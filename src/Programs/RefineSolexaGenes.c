@@ -71,7 +71,7 @@ static int nExonClone = 0;
 
 FILE *logfp;
 
-#define RSGVERSION "0.3.5-91"
+#define RSGVERSION "0.3.6-91"
 #define RSGGENE_KEEP 16
 #define RSG_DUPLICATE 32
 #define RSG_PROCESSED 64
@@ -980,9 +980,14 @@ void  RefineSolexaGenes_run(RefineSolexaGenes *rsg) {
   if (verbosity > 2) {
     fprintf(stderr, "RUN\n");
   }
+  Vector_sort(RefineSolexaGenes_getPrelimGenes(rsg), SeqFeat_lengthCompFunc);
   Vector *res = RefineSolexaGenes_refineGenes(rsg, RefineSolexaGenes_getPrelimGenes(rsg));
-  int state = 1;
+  int state = 0;
   while (Vector_getNumElement(res)) {
+    ++state;
+    if (verbosity > 2) {
+      fprintf(stderr, "Round %d\n", state);
+    }
     Vector *tmp = RefineSolexaGenes_refineGenes(rsg, res);
     if (Vector_getNumElement(tmp)) {
       Vector_free(res);
@@ -1996,9 +2001,9 @@ Vector *RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg, Vector *prelimGene
         for (j = 0; j < Vector_getNumElement(exons)-1; j++) {
           Exon *exon = Vector_getElementAt(exons, j);
           Transcript_addExon(newT, exon, 0);
-          istart = Gene_getEnd(exon);
+          istart = Exon_getEnd(exon);
           exon = Vector_getElementAt(exons, j+1);
-          iend = Gene_getStart(exon);
+          iend = Exon_getStart(exon);
           for (k = l; k < Vector_getNumElement(genesToProcess); k++) {
             Gene *goodGene = Vector_getElementAt(genesToProcess, k);
             if (Gene_getStart(goodGene) > iend) {
@@ -2007,16 +2012,17 @@ Vector *RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg, Vector *prelimGene
             else if (Gene_getEnd(goodGene) < istart) {
               l = k;
             }
-            else if (Gene_getStart(goodGene) > istart) {
-             if (Gene_getEnd(goodGene) < iend) {
-                Transcript_setAnalysis(newT, Gene_getAnalysis(gene));
-                Transcript_setStableId(newT, Transcript_getStableId(Gene_getTranscriptAt(gene, 0)));
-                Gene *newG = Gene_new();
-                Gene_addTranscript(newG, newT);
-                Gene_setAnalysis(newG, Gene_getAnalysis(gene));
-                Gene_setStableId(newG, Gene_getStableId(gene));
-                Vector_addElement(splitRough, newG);
-                newT = Transcript_new();
+            else if (Gene_getStart(goodGene) < iend && Gene_getEnd(goodGene) > istart) {
+              Transcript_setAnalysis(newT, Gene_getAnalysis(gene));
+              Transcript_setStableId(newT, Transcript_getStableId(Gene_getTranscriptAt(gene, 0)));
+              Gene *newG = Gene_new();
+              Gene_addTranscript(newG, newT);
+              Gene_setAnalysis(newG, Gene_getAnalysis(gene));
+              Gene_setStableId(newG, Gene_getStableId(gene));
+              Vector_addElement(splitRough, newG);
+              newT = Transcript_new();
+              if (Exon_getStart(exon) < Gene_getEnd(goodGene) && Exon_getEnd(exon) > Gene_getStart(goodGene)) {
+                ++j;
               }
               l = k+1;
               break;
@@ -2028,10 +2034,23 @@ Vector *RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg, Vector *prelimGene
         Transcript_setStableId(newT, Transcript_getStableId(Gene_getTranscriptAt(gene, 0)));
         Gene *newG = Gene_new();
         Gene_addTranscript(newG, newT);
-        Gene_setAnalysis(newG, Gene_getAnalysis(gene));
-        Gene_setStableId(newG, Gene_getStableId(gene));
-        Vector_addElement(splitRough, newG);
+        if (Gene_getStart(gene) != Gene_getStart(newG) || Gene_getEnd(gene) != Gene_getEnd(newG)) {
+          Gene_setAnalysis(newG, Gene_getAnalysis(gene));
+          Gene_setStableId(newG, Gene_getStableId(gene));
+          Vector_addElement(splitRough, newG);
+        }
       }
+    }
+    //TH: Adding this free seems to be adding 20s to the run time without impacting on the memory consumption
+    Vector_setFreeFunc(roughToBreak, Gene_free);
+    Vector_free(roughToBreak);
+  }
+  for (i = 0; i < Vector_getNumElement(splitRough); i++) {
+    Gene * gene = Vector_getElementAt(splitRough, i);
+    Vector *exons = Transcript_getAllExons(Gene_getTranscriptAt(gene, 0));
+    int j = 0;
+    for (j = 0; j < Vector_getNumElement(exons); j++) {
+      Exon *exon = Vector_getElementAt(exons, j);
     }
   }
   return splitRough;
@@ -2039,84 +2058,91 @@ Vector *RefineSolexaGenes_refineGenes(RefineSolexaGenes *rsg, Vector *prelimGene
 
 Vector *RefineSolexaGenes_checkNewGeneCoverage(RefineSolexaGenes *rsg, Gene *roughGene, Vector *gene_set) {
   int kj = 0;
-  Vector_sort(gene_set, SeqFeature_startEndCompFunc);
+  Vector_sort(gene_set, SeqFeature_startRevEndCompFunc);
   Vector *splitGenes = Vector_new();
   Vector *blocks = Vector_new();
   long start = Gene_getStart(roughGene);
   long end = Gene_getEnd(roughGene);
   long last_end = start;
-  Vector_addElement(blocks, ORFRange_new(1, start, end));
+  Vector_addElement(blocks, ORFRange_new((end-start+1), start, end));
   for (kj = 0; kj < Vector_getNumElement(gene_set); kj++) {
     Gene *gene = Vector_getElementAt(gene_set, kj);
     if (last_end < Gene_getStart(gene)) {
       ORFRange *last = Vector_getLastElement(blocks);
       if (last->end > Gene_getStart(gene)) {
         last->end = Gene_getStart(gene)-1;
+        last->length = last->end-last->start+1;
       }
-      Vector_addElement(blocks, ORFRange_new(1, Gene_getEnd(gene)+1, end));
+      Vector_addElement(blocks, ORFRange_new((end-Gene_getEnd(gene)+2), Gene_getEnd(gene)+1, end));
+      last_end = Gene_getEnd(gene);
     }
   }
   int jk = 0;
   int ijk = 0;
+  int min_single_exon = RefineSolexaGenes_getMinSingleExonLength(rsg);
   Vector *exons = Vector_copy(Transcript_getAllExons(Gene_getTranscriptAt(roughGene, 0)));
   Vector_sort(exons, SeqFeature_startCompFunc);
   for (kj = 0; kj < Vector_getNumElement(blocks); kj++) {
     ORFRange *block = Vector_getElementAt(blocks, kj);
-    Transcript *newT = Transcript_new();
-    for (jk = ijk; jk < Vector_getNumElement(exons); jk++) {
-      Exon *exon = Vector_getElementAt(exons, jk);
-      if (Exon_getStart(exon) <= block->end && Exon_getEnd(exon) >= block->start) {
-        int start = 0;
-        int end = 0;
-        if (Exon_getStart(exon) < block->start) {
-          if (block->start-Exon_getStart(exon) < 40) {
-            continue;
+    if (block->length > min_single_exon) {
+      Transcript *newT = Transcript_new();
+      for (jk = ijk; jk < Vector_getNumElement(exons); jk++) {
+        Exon *exon = Vector_getElementAt(exons, jk);
+        if (Exon_getStart(exon) <= block->end && Exon_getEnd(exon) >= block->start) {
+          int start = 0;
+          int end = 0;
+          if (Exon_getStart(exon) < block->start) {
+            if (block->start-Exon_getStart(exon) < 40) {
+              continue;
+            }
+            start = block->start;
           }
-          start = block->start;
-        }
-        if (Exon_getEnd(exon) > block->end) {
-          if (Exon_getEnd(exon)-block->end < 40) {
-            continue;
+          if (Exon_getEnd(exon) > block->end) {
+            if (Exon_getEnd(exon)-block->end < 40) {
+              continue;
+            }
+            end = block->end;
           }
-          end = block->end;
+          if (start || end) {
+            start = start ? start : Exon_getStart(exon);
+            end = end ? end : Exon_getEnd(exon);
+            BaseAlignFeature *sf = EvidenceUtils_cloneEvidence(Vector_getElementAt(Exon_getAllSupportingFeatures(exon), 0));
+            BaseAlignFeature_setStart(sf, start);
+            BaseAlignFeature_setEnd(sf, end);
+            Vector *sfs = Vector_new();
+            Vector_addElement(sfs, sf);
+            Exon *newE = ExonUtils_createExon(start, end, -1, -1, Exon_getStrand(exon), Exon_getAnalysis(exon), sfs, 0, Exon_getSlice(exon), NULL, 0);
+            Transcript_addExon(newT, newE, 0);
+          }
+          else {
+            Transcript_addExon(newT, exon, 0);
+          }
         }
-        if (start || end) {
-          start = start ? start : Exon_getStart(exon);
-          end = end ? end : Exon_getEnd(exon);
-          BaseAlignFeature *sf = EvidenceUtils_cloneEvidence(Vector_getElementAt(Exon_getAllSupportingFeatures(exon), 0));
-          BaseAlignFeature_setStart(sf, start);
-          BaseAlignFeature_setEnd(sf, end);
-          Vector *sfs = Vector_new();
-          Vector_addElement(sfs, sf);
-          Exon *newE = ExonUtils_createExon(start, end, -1, -1, Exon_getStrand(exon), Exon_getAnalysis(exon), sfs, 0, Exon_getSlice(exon), NULL, 0);
-          Transcript_addExon(newT, newE, 0);
+        else if (Exon_getStart(exon) > block->end) {
+          ijk = jk;
+          break;
+        }
+      }
+      if (Transcript_getExonCount(newT) > 0 && !(Gene_getStart(roughGene) == Transcript_getStart(newT) && Gene_getEnd(roughGene) == Transcript_getEnd(newT))) {
+        int iii = 0;
+        for (iii = 0;iii < Transcript_getExonCount(newT); iii++) {
+        }
+        if (Transcript_getExonCount(newT) == 1 && Transcript_getLength(newT) < RefineSolexaGenes_getMinSingleExonLength) {
+          Transcript_free(newT);
         }
         else {
-          Transcript_addExon(newT, exon, 0);
+          Transcript_setStableId(newT, Transcript_getStableId(Gene_getTranscriptAt(roughGene, 0)));
+          Transcript_setAnalysis(newT, Gene_getAnalysis(roughGene));
+          Gene *newG = Gene_new();
+          Gene_addTranscript(newG, newT);
+          Gene_setStableId(newG, Gene_getStableId(roughGene));
+          Gene_setAnalysis(newG, Gene_getAnalysis(roughGene));
+          Vector_addElement(splitGenes, newG);
         }
       }
-      else if (Exon_getStart(exon) > block->end) {
-        ijk = jk;
-        break;
-      }
-    }
-    if (Transcript_getExonCount(newT) > 0 && !(Gene_getStart(roughGene) == Transcript_getStart(newT) && Gene_getEnd(roughGene) == Transcript_getEnd(newT))) {
-      int iii = 0;
-      if (Transcript_getExonCount(newT) == 1 && Transcript_getLength(newT) < RefineSolexaGenes_getMinSingleExonLength) {
+      else {
         Transcript_free(newT);
       }
-      else {
-        Transcript_setStableId(newT, Transcript_getStableId(Gene_getTranscriptAt(roughGene, 0)));
-        Transcript_setAnalysis(newT, Gene_getAnalysis(roughGene));
-        Gene *newG = Gene_new();
-        Gene_addTranscript(newG, newT);
-        Gene_setStableId(newG, Gene_getStableId(roughGene));
-        Gene_setAnalysis(newG, Gene_getAnalysis(roughGene));
-        Vector_addElement(splitGenes, newG);
-      }
-    }
-    else {
-      Transcript_free(newT);
     }
   }
   return splitGenes;
@@ -3081,7 +3107,7 @@ Vector *RefineSolexaGenes_makeModels(RefineSolexaGenes *rsg, StringHash *paths, 
 
               codingBonus += DNAAlignFeature_getScore(daf);
             } else {
-              if (verbosity > 0) fprintf(stderr, "ERROR ERROR ERROR: Have an exon with no support: Exon %p\n", ce);
+              if (verbosity > 0) fprintf(stderr, "ERROR ERROR ERROR: Have an exon with no support: Exon %p %ld %ld %d\n", ce, Exon_getStart(ce), Exon_getEnd(ce), Exon_getStrand(ce));
             }
             codingExons++;
 // NIY: Free support?
