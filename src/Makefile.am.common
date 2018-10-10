@@ -1,0 +1,8 @@
+# Common settings for compiles.
+#
+
+NULL =
+
+AM_LDFLAGS = \
+-lensc \
+$(NULL)
