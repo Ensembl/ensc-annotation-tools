@@ -9,3 +9,27 @@
 
 # M4 data
 m4
+
+# Files created by autoconf/automake/...
+*.in
+*Makefile
+*.m4
+src/configure
+src/config
+src/config.log
+src/config.h
+src/config.status
+src/autom4te.cache
+src/libtool
+src/stamp-h1
+
+# Binary
+src/Programs/RefineSolexaGenes
+src/Programs/bamcount
+src/Programs/bamcount_exon
+src/Programs/bamcov
+src/Programs/bammap
+src/Programs/countsnps
+src/Programs/fastasplit_random
+src/Programs/indicate
+src/Programs/translate
