@@ -40,11 +40,13 @@ if HAVE_SAMTOOLS
   bammap_LDADD = $(PROG_LIBS)
 
 if HAVE_LIBCONFIG
-  bin_PROGRAMS += RefineSolexaGenes
+  bin_PROGRAMS += RefineSolexaGenes RoughTranscripts
   RefineSolexaGenes_SOURCES = RefineSolexaGenes.c RefineSolexaGenes.h 
+  RoughTranscripts_SOURCES = RoughTranscripts.c RoughTranscripts.h
 
   PROG_LIBS += -lconfig $(MYSQL_LDFLAGS)
   RefineSolexaGenes_LDADD = $(PROG_LIBS)
+  RoughTranscripts_LDADD = $(PROG_LIBS)
 if HAVE_LIBTCMALLOC
   PROG_LIBS += -ltcmalloc
 endif
