@@ -561,14 +561,12 @@ void RoughTranscripts_bamToExonFeatures(RoughTranscripts *rsg) {
     }
     start = read->core.pos+1;
     end = bam_endpos(read)+1;
-    fprintf(stderr, "%s %ld %ld\n", bam_get_qname(read), start, end);
     current = realStrand == 1 ? forward : reverse;
     createNewCluster = 1;
     for (i = Vector_getNumElement(current)-1; i > -1; i--) {
       DAFCluster *cluster = Vector_getElementAt(current, i);
       if (DAFCluster_getStart(cluster) <= end && DAFCluster_getEnd(cluster) >= start) {
         if (DAFCluster_getEnd(cluster) < end) {
-          fprintf(stderr, "  %ld %ld\n", DAFCluster_getEnd(cluster), end);
           DAFCluster_setEnd(cluster, end);
         }
         DAFCluster_incrementScore(cluster);
@@ -634,11 +632,8 @@ void RoughTranscripts_processMatePairs(bam1_t *read, DAFCluster *cluster, Vector
   int end = 0;
   int isize = 0;
   DAFCluster *mate_cluster;
-  fprintf(stderr, "%-20sESTART %ld\tEEND %ld\tMSTART %d\tMEND %d\tLAST PAIRING %d\tINDEX %i\tNUM V %d\n", "processMatePairs", DAFCluster_getStart(cluster), DAFCluster_getEnd(cluster), mate_start, mate_end, *last_pairing, index, Vector_getNumElement(current));
   if (!(mate_end >= DAFCluster_getStart(cluster) && mate_start <= DAFCluster_getEnd(cluster))) {
     j = index-1;
-    fprintf(stderr, "%-20sLSTART %ld\tLEND %ld\tMSTART %d\tMEND %d\tLAST PAIRING %d\tINDEX %i\n", "processMatePairs", DAFCluster_getStart(Vector_getElementAt(current, *last_pairing)), DAFCluster_getEnd(Vector_getElementAt(current, *last_pairing)), mate_start, mate_end, *last_pairing, index);
-    fprintf(stderr, "%-20sPSTART %ld\tPEND %ld\tMSTART %d\tMEND %d\tLAST PAIRING %d\tINDEX %i\n", "processMatePairs", DAFCluster_getStart(Vector_getElementAt(current, j)), DAFCluster_getEnd(Vector_getElementAt(current, j)), mate_start, mate_end, *last_pairing, index);
     if (DAFCluster_getStart(Vector_getElementAt(current, *last_pairing)) <= mate_end
         && DAFCluster_getEnd(Vector_getElementAt(current, *last_pairing)) >= mate_start) {
       mate_cluster = Vector_getElementAt(current, *last_pairing);
@@ -649,15 +644,12 @@ void RoughTranscripts_processMatePairs(bam1_t *read, DAFCluster *cluster, Vector
           }
         }
       }
-      fprintf(stderr, "%-20sLAST LINKS NUM %dEXON %x\n", "processMatePairs", Vector_getNumElement(mate_cluster->links), cluster);
       Vector_addElement(mate_cluster->links, cluster);
-      fprintf(stderr, "%-20sLAST LINKS NUM %dEXON %x\n", "processMatePairs", Vector_getNumElement(mate_cluster->links), cluster);
       return;
     }
     else if (DAFCluster_getStart(Vector_getElementAt(current, j)) <= mate_end
         && DAFCluster_getEnd(Vector_getElementAt(current, j)) >= mate_start) {
       mate_cluster = Vector_getElementAt(current, j);
-      fprintf(stderr, "%-20sPREVIOUS LINKS NUM %dEXON %x\tLAST %d\n", "processMatePairs", Vector_getNumElement(mate_cluster->links), cluster, *last_pairing);
       *last_pairing = j;
       if (Vector_getNumElement(mate_cluster->links)) {
         for (k = Vector_getNumElement(mate_cluster->links)-1; k > -1; k--) {
@@ -667,7 +659,6 @@ void RoughTranscripts_processMatePairs(bam1_t *read, DAFCluster *cluster, Vector
         }
       }
       Vector_addElement(mate_cluster->links, cluster);
-      fprintf(stderr, "%-20sPREVIOUS LINKS NUM %dEXON %x\tLAST %x\n", "processMatePairs", Vector_getNumElement(mate_cluster->links), cluster, *last_pairing);
       return;
     }
     else {
@@ -687,7 +678,6 @@ void RoughTranscripts_processMatePairs(bam1_t *read, DAFCluster *cluster, Vector
         }
       }
       mate_cluster = Vector_getElementAt(current, j);
-      fprintf(stderr, "%-20sSEARCH LINKS NUM %dEXON %x\tLAST %d\n", "processMatePairs", Vector_getNumElement(mate_cluster->links), cluster, *last_pairing);
       *last_pairing = j;
       if (Vector_getNumElement(mate_cluster->links)) {
         for (k = Vector_getNumElement(mate_cluster->links)-1; k > -1; k--) {
@@ -697,7 +687,6 @@ void RoughTranscripts_processMatePairs(bam1_t *read, DAFCluster *cluster, Vector
         }
       }
       Vector_addElement(mate_cluster->links, cluster);
-      fprintf(stderr, "%-20sSEARCH LINKS NUM %dEXON %x\tLAST %d\n", "processMatePairs", Vector_getNumElement(mate_cluster->links), cluster, *last_pairing);
       return;
     }
   }
@@ -717,26 +706,20 @@ void RoughTranscripts_processClusters (RoughTranscripts *rsg, Vector *clusters) 
   if (RoughTranscripts_isDataPaired(rsg)) {
     for (i = 0; i < Vector_getNumElement(clusters); i++) {
       DAFCluster *cluster = Vector_getElementAt(clusters, i);
-      fprintf(stderr, "\n%-20sINDEX %d\tSTART %ld\tEND %ld\tCLUSTER INDEX %i\n", "processCluster", i, DAFCluster_getStart(cluster), DAFCluster_getEnd(cluster), cluster_index);
       if (DNAAlignFeature_gethCoverage(cluster->feature) == 0) {
         if (Vector_getNumElement(cluster->links)) {
           cluster_index = Vector_getNumElement(transcripts);
-          fprintf(stderr, "%-20sNUM LINKS %d\tCLUSTER INDEX %d\n", "processCluster", Vector_getNumElement(cluster->links), cluster_index);
           tmp_index = RoughTranscripts_processLink(cluster, transcripts, cluster_index);
-          fprintf(stderr, "%-20sCLUSTER INDEX %d\tTMP INDEX %d\n", "processCluster", cluster_index, tmp_index);
           if (tmp_index != cluster_index) {
             exit(EX_DATAERR);
           }
         }
         else {
-          fprintf(stderr, "%-20sSETTING COVERAGE\t CLUSTER INDEX %d\n", "processCluster", cluster_index);
           DAFCluster_incrementHCoverage(cluster);
           Vector *transcript = Vector_new();
           Vector_addElement(transcript, cluster);
           Vector_addElement(transcripts, transcript);
-          fprintf(stderr, "%-20sADDING TRANSCRIPT\t CLUSTER INDEX %d\n", "processCluster", cluster_index);
           cluster_index = Vector_getNumElement(transcripts);
-          fprintf(stderr, "%-20sCLUSTER INDEX %d\n", "processCluster", cluster_index);
         }
       }
     }
@@ -836,21 +819,17 @@ int RoughTranscripts_processLink(DAFCluster *object, Vector *cluster, int index)
   int j = 0;
   int found = 0;
   DAFCluster_incrementHCoverage(object);
-  fprintf(stderr, "%-20sOBJECT %x\tOBJECT INDEX %d\tINDEX %d\n", "processLink", object, object->index, index);
   if (object->index != -1) {
     if (index != object->index) {
       if (Vector_getNumElement(cluster) == index) {
         Vector_addElement(cluster, Vector_new());
-        fprintf(stderr, "%-20sADDING TRANSCRIPT %d\tINDEX %d\n", "processLink", Vector_getNumElement(cluster), index);
       }
       Vector *old_cluster = Vector_getElementAt(cluster, object->index);
       Vector *new_cluster = Vector_getElementAt(cluster, index);
-      fprintf(stderr, "%-20sOLD CLUSTER %d\tOLD INDEX %d\tNEW CLUSTER %d\tNEW INDEX %d\n", "processLink", Vector_getNumElement(old_cluster), object->index, Vector_getNumElement(new_cluster), index);
       for (i = 0; i < Vector_getNumElement(old_cluster); i++) {
         DAFCluster *elm = Vector_getElementAt(old_cluster, i);
         found = 0;
         for (j = 0; j < Vector_getNumElement(new_cluster); j++) {
-          fprintf(stderr, "%-20sOLD ELM %x\tNEW ELM %x\n", "processLink", elm, Vector_getElementAt(new_cluster, j));
           if (Vector_getElementAt(new_cluster, j) == elm) {
             found = 1;
             break;
@@ -859,7 +838,6 @@ int RoughTranscripts_processLink(DAFCluster *object, Vector *cluster, int index)
         if (! found) {
           Vector_addElement(new_cluster, Vector_getElementAt(old_cluster, i));
           elm->index = index;
-          fprintf(stderr, "%-20sINDEX %d\tNEW INDEX %d\n", "processLink", index, elm->index);
         }
       }
       Vector_removeAll(old_cluster);
@@ -867,18 +845,13 @@ int RoughTranscripts_processLink(DAFCluster *object, Vector *cluster, int index)
   }
   else {
     object->index = index;
-    fprintf(stderr, "%-20sINDEX %d\tOBJECT INDEX %d\tNUM LINKS %d\n", "processLink", index, object->index, Vector_getNumElement(object->links));
     for (i = 0; i < Vector_getNumElement(object->links); i++) {
-      fprintf(stderr, "%-20s  LINK %x\n", "processLink", Vector_getElementAt(object->links, i));
-      fprintf(stderr, "%-20s  LINK %x\tSTART %ld\tEND %ld\n", "processLink", Vector_getElementAt(object->links, i), DAFCluster_getStart(Vector_getElementAt(object->links, i)), DAFCluster_getEnd(Vector_getElementAt(object->links, i)));
       j = RoughTranscripts_processLink(Vector_getElementAt(object->links, i), cluster, index);
-      fprintf(stderr, "%-20sINDEX %d\tJNDEX %d\n", "processLink", index, j);
       if (j != index) {
         index = j;
       }
     }
     found = 0;
-    fprintf(stderr, "%-20sCHECKING EXON\n", "processLink");
     if (Vector_getNumElement(cluster) != index) {
       Vector *new_cluster = Vector_getElementAt(cluster, index);
       for (i = 0; i < Vector_getNumElement(new_cluster); i++) {
@@ -888,17 +861,13 @@ int RoughTranscripts_processLink(DAFCluster *object, Vector *cluster, int index)
         }
       }
       if (! found) {
-        fprintf(stderr, "%-20sADDING NEW EXON\n", "processLink");
         Vector_addElement(new_cluster, object);
-        fprintf(stderr, "%-20sTRANSCRIPT %x\tNUM EXONS %d\n", "processLink", new_cluster, Vector_getNumElement(new_cluster));
       }
     }
     else {
-      fprintf(stderr, "%-20sADDING NEW TRANSCRIPT\n", "processLink");
       Vector *new_cluster = Vector_new();
       Vector_addElement(new_cluster, object);
       Vector_addElement(cluster, new_cluster);
-      fprintf(stderr, "%-20sINDEX %d\tNUM CLUSTER %d\tNEW TRANSCRIPT %x\t%NUM EXONS %d\n", "processLink", index, Vector_getNumElement(cluster), new_cluster, Vector_getNumElement(new_cluster));
     }
   }
   return index;
