@@ -167,6 +167,7 @@ void DAFCluster_incrementScore(DAFCluster *cluster);
 void DAFCluster_free(DAFCluster *cluster);
 
 Exon *ExonUtils_createExon(long start, long end, int phase, int endPhase, int strand, Analysis *analysis, Vector *supportingFeatures, IDType dbId, Slice *slice, char *stableId, int version);
+void *TranscriptUtils_addExonPadding(Transcript *transcript);
 
 void RunnableDB_readAndCheckConfig(RoughTranscripts *rsg, char *configFile, char *blockName, char *logicName);
 void RunnableDB_readDatabaseConfig(RoughTranscripts *rsg, char *configFile);

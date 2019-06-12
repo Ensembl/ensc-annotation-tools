@@ -789,6 +789,7 @@ void RoughTranscripts_processClusters (RoughTranscripts *rsg, Vector *clusters) 
         DAFCluster_free(cluster);
       }
       if (RoughTranscripts_isTranscriptValid(transcript, min_length, min_single_exon_length, min_span)) {
+        TranscriptUtils_addExonPadding(transcript);
         Transcript_setAnalysis(transcript, Exon_getAnalysis((Exon *)Transcript_getExonAt(transcript, 0)));
         Transcript_setBiotype(transcript, Analysis_getLogicName(Transcript_getAnalysis(transcript)));
         Gene *gene = Gene_new();
@@ -1077,6 +1078,36 @@ Exon *ExonUtils_createExon(long start, long end, int phase, int endPhase, int st
   return newExon;
 }
 
+void *TranscriptUtils_addExonPadding(Transcript *transcript) {
+  int i = 0;
+  int last_end = 0;
+  int trim = 0;
+
+  Vector *sortedExons = Vector_new();
+  for (i = 0; i < Transcript_getExonCount(transcript); i++) {
+    Vector_addElement(sortedExons, Transcript_getExonAt(transcript, i));
+  }
+  Vector_sort(sortedExons, SeqFeature_startCompFunc);
+  for (i = 0; i < Vector_getNumElement(sortedExons); i++) {
+    Exon_setStart((Exon *)Vector_getElementAt(sortedExons, i), Exon_getStart((Exon *)Vector_getElementAt(sortedExons, i))-20);
+    Exon_setEnd((Exon *)Vector_getElementAt(sortedExons, i), Exon_getEnd((Exon *)Vector_getElementAt(sortedExons, i))+20);
+    if (Exon_getStart((Exon *)Vector_getElementAt(sortedExons, i)) < 1) {
+      Exon_setStart((Exon *)Vector_getElementAt(sortedExons, i), 1);
+    }
+    if (Exon_getEnd((Exon *)Vector_getElementAt(sortedExons, i)) > Slice_getSeqRegionLength(Transcript_getSlice(transcript))) {
+      Exon_setEnd((Exon *)Vector_getElementAt(sortedExons, i), Slice_getSeqRegionLength(Transcript_getSlice(transcript)));
+    }
+    if (last_end) {
+      if (last_end >= Exon_getStart((Exon *)Vector_getElementAt(sortedExons, i))) {
+        trim = (last_end - Exon_getStart((Exon *)Vector_getElementAt(sortedExons, i)))/2;
+        Exon_setStart((Exon *)Vector_getElementAt(sortedExons, i), Exon_getStart((Exon *)Vector_getElementAt(sortedExons, i))-trim+1);
+        Exon_setEnd((Exon *)Vector_getElementAt(sortedExons, i-1), Exon_getEnd((Exon *)Vector_getElementAt(sortedExons, i-1))-1);
+      }
+    }
+    last_end = Exon_getEnd((Exon *)Vector_getElementAt(sortedExons, i));
+  }
+  Vector_free(sortedExons);
+}
 
 
 int dumpGenes(Vector *genes, int withSupport) {
