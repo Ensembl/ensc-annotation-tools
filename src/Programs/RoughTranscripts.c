@@ -656,7 +656,7 @@ void RoughTranscripts_processMatePairs(bam1_t *read, DAFCluster *cluster, Vector
     }
     else if (DAFCluster_getStart(Vector_getElementAt(current, j)) <= mate_end
         && DAFCluster_getEnd(Vector_getElementAt(current, j)) >= mate_start) {
-      mate_cluster = Vector_getElementAt(current, *last_pairing);
+      mate_cluster = Vector_getElementAt(current, j);
       fprintf(stderr, "%-20sPREVIOUS LINKS NUM %dEXON %x\tLAST %d\n", "processMatePairs", Vector_getNumElement(mate_cluster->links), cluster, *last_pairing);
       *last_pairing = j;
       if (Vector_getNumElement(mate_cluster->links)) {
