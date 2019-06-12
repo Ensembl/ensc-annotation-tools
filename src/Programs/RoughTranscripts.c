@@ -796,6 +796,7 @@ void RoughTranscripts_processClusters (RoughTranscripts *rsg, Vector *clusters) 
         Gene_addTranscript(gene, transcript);
         Gene_setAnalysis(gene, Transcript_getAnalysis(transcript));
         Gene_setBiotype(gene, Transcript_getBiotype(transcript));
+        Gene_setSource(gene, "ensembl");
         RoughTranscripts_addToOutput(rsg, gene);
       }
       else {
